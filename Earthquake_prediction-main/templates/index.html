@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Earthquake Intensity Predictor</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+            background-color: #f0f8ff;
+        }
+        header {
+            background-color: #4a69bd;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        main {
+            display: flex;
+            flex: 1;
+        }
+        .left-panel {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+        }
+        .right-panel {
+            flex: 1;
+            padding: 20px;
+        }
+        #manual-input {
+            margin-bottom: 20px;
+        }
+        input[type="number"] {
+            width: 200px;
+            padding: 10px;
+            margin-right: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 15px;
+            margin-right: 10px;
+            margin-bottom: 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        #use-current-location, #enter-coordinates {
+            background-color: #4a69bd;
+            color: white;
+        }
+        #use-current-location:hover, #enter-coordinates:hover {
+            background-color: #3c5aa6;
+        }
+        #use-current-location.active, #enter-coordinates.active {
+            background-color: #27ae60;
+        }
+        #predict-manual {
+            background-color: #27ae60;
+            color: white;
+        }
+        #predict-manual:hover {
+            background-color: #219653;
+        }
+        #result {
+            background-color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: box-shadow 0.3s ease;
+        }
+        #result:hover {
+            box-shadow: 0 6px 8px rgba(0,0,0,0.15);
+        }
+        #result h2 {
+            color: #4a69bd;
+            border-bottom: 2px solid #4a69bd;
+            padding-bottom: 10px;
+            margin-top: 0;
+        }
+        #result p {
+            margin: 10px 0;
+            line-height: 1.6;
+        }
+        #result strong {
+            color: #2c3e50;
+        }
+        #map {
+            height: 400px;
+            width: 100%;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .legend {
+            padding: 6px 8px;
+            font: 14px Arial, Helvetica, sans-serif;
+            background: white;
+            background: rgba(255, 255, 255, 0.8);
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.2);
+            border-radius: 5px;
+            line-height: 24px;
+            color: #555;
+        }
+        .legend i {
+            width: 18px;
+            height: 18px;
+            float: left;
+            margin-right: 8px;
+            opacity: 0.7;
+        }
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #3498db;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Earthquake Intensity Predictor</h1>
+    </header>
+    <main>
+        <div class="left-panel">
+            <button id="use-current-location">Use Current Location</button>
+            <button id="enter-coordinates">Enter Coordinates Manually</button>
+            
+            <div id="manual-input">
+                <label for="latitude">Latitude:</label>
+                <input type="number" step="any" id="latitude" required>
+                <label for="longitude">Longitude:</label>
+                <input type="number" step="any" id="longitude" required>
+                <button id="predict-manual">Predict</button>
+            </div>
+
+            <div id="loader" class="loader"></div>
+
+            <div id="result"></div>
+        </div>
+        <div class="right-panel">
+            <div id="map"></div>
+        </div>
+    </main>
+
+    <script>
+        const resultDiv = document.getElementById('result');
+        const manualInput = document.getElementById('manual-input');
+        const useCurrentLocationBtn = document.getElementById('use-current-location');
+        const enterCoordinatesBtn = document.getElementById('enter-coordinates');
+        const predictManualBtn = document.getElementById('predict-manual');
+        const latitudeInput = document.getElementById('latitude');
+        const longitudeInput = document.getElementById('longitude');
+        const loader = document.getElementById('loader');
+
+        let map = L.map('map').setView([0, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: ''
+        }).addTo(map);
+
+        let marker, epicenterMarker;
+        let isUsingCurrentLocation = false;
+
+        let legend = L.control({position: 'bottomright'});
+        legend.onAdd = function (map) {
+            let div = L.DomUtil.create('div', 'info legend');
+            div.innerHTML += '<i style="background: blue"></i> Your Location<br>';
+            div.innerHTML += '<i style="background: red"></i> Nearest Epicenter<br>';
+            return div;
+        };
+        legend.addTo(map);
+
+        function showResult(data) {
+            loader.style.display = 'none';
+            resultDiv.innerHTML = `
+                <h2>Prediction Results</h2>
+                <p><strong>Your Location:</strong> ${data.user_location.city} (${data.user_location.latitude}, ${data.user_location.longitude})</p>
+                <p><strong>Predicted Earthquake Magnitude:</strong> ${data.predicted_magnitude}</p>
+                <p><strong>Nearest Epicenter:</strong> ${data.epicenter.city} (${data.epicenter.latitude}, ${data.epicenter.longitude})</p>
+                <p><strong>Distance from Epicenter:</strong> ${data.distance} km</p>
+                <p><strong>Depth:</strong> ${data.depth} km</p>
+            `;
+        }
+
+        function getPrediction(lat, lon) {
+            loader.style.display = 'block';
+            resultDiv.innerHTML = '';
+            fetch('/predict', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ latitude: lat, longitude: lon }),
+            })
+            .then(response => response.json())
+            .then(data => {
+                showResult(data);
+                updateMap(data.user_location.latitude, data.user_location.longitude, data.epicenter.latitude, data.epicenter.longitude);
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                loader.style.display = 'none';
+                resultDiv.innerHTML = '<p>An error occurred. Please try again.</p>';
+            });
+        }
+
+        function updateMap(userLat, userLon, epicenterLat, epicenterLon) {
+            map.setView([(userLat + epicenterLat) / 2, (userLon + epicenterLon) / 2], 5);
+            
+            if (marker) {
+                marker.setLatLng([userLat, userLon]);
+            } else {
+                marker = L.marker([userLat, userLon], {
+                    icon: L.icon({
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
+                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34],
+                        shadowSize: [41, 41]
+                    }),
+                    title: "Your Location"
+                }).addTo(map);
+            }
+            
+            if (epicenterMarker) {
+                epicenterMarker.setLatLng([epicenterLat, epicenterLon]);
+            } else {
+                epicenterMarker = L.marker([epicenterLat, epicenterLon], {
+                    icon: L.icon({
+                        iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+                        shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+                        iconSize: [25, 41],
+                        iconAnchor: [12, 41],
+                        popupAnchor: [1, -34],
+                        shadowSize: [41, 41]
+                    }),
+                    title: "Nearest Epicenter"
+                }).addTo(map);
+            }
+            
+            if (window.polyline) {
+                map.removeLayer(window.polyline);
+            }
+            window.polyline = L.polyline([[userLat, userLon], [epicenterLat, epicenterLon]], {color: 'red'}).addTo(map);
+        }
+
+        function setActiveButton(buttonId) {
+            useCurrentLocationBtn.classList.remove('active');
+            enterCoordinatesBtn.classList.remove('active');
+            document.getElementById(buttonId).classList.add('active');
+        }
+
+        function useCurrentLocation() {
+            setActiveButton('use-current-location');
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const lat = position.coords.latitude;
+                        const lon = position.coords.longitude;
+                        latitudeInput.value = lat;
+                        longitudeInput.value = lon;
+                        isUsingCurrentLocation = true;
+                        getPrediction(lat, lon);
+                    },
+                    (error) => {
+                        console.error('Error:', error);
+                        resultDiv.innerHTML = '<p>Unable to get your location. Please try entering coordinates manually.</p>';
+                        setActiveButton('enter-coordinates');
+                    }
+                );
+            } else {
+                resultDiv.innerHTML = '<p>Geolocation is not supported by your browser. Please enter coordinates manually.</p>';
+                setActiveButton('enter-coordinates');
+            }
+        }
+
+        useCurrentLocationBtn.addEventListener('click', useCurrentLocation);
+
+        enterCoordinatesBtn.addEventListener('click', () => {
+            setActiveButton('enter-coordinates');
+            manualInput.style.display = 'block';
+            isUsingCurrentLocation = false;
+        });
+
+        predictManualBtn.addEventListener('click', () => {
+            const lat = parseFloat(latitudeInput.value);
+            const lon = parseFloat(longitudeInput.value);
+            if (isNaN(lat) || isNaN(lon)) {
+                resultDiv.innerHTML = '<p>Please enter valid coordinates.</p>';
+                return;
+            }
+            isUsingCurrentLocation = false;
+            setActiveButton('enter-coordinates');
+            getPrediction(lat, lon);
+        });
+
+        map.on('click', function(e) {
+            const lat = e.latlng.lat;
+            const lng = e.latlng.lng;
+            latitudeInput.value = lat;
+            longitudeInput.value = lng;
+            isUsingCurrentLocation = false;
+            setActiveButton('enter-coordinates');
+            getPrediction(lat, lng);
+        });
+
+        function checkCoordinatesChange() {
+            const currentLat = parseFloat(latitudeInput.value);
+            const currentLon = parseFloat(longitudeInput.value);
+            
+            if (isUsingCurrentLocation) {
+                if (marker && (currentLat !== marker.getLatLng().lat || currentLon !== marker.getLatLng().lng)) {
+                    isUsingCurrentLocation = false;
+                    setActiveButton('enter-coordinates');
+                }
+            }
+        }
+
+        latitudeInput.addEventListener('input', checkCoordinatesChange);
+        longitudeInput.addEventListener('input', checkCoordinatesChange);
+
+        window.addEventListener('load', useCurrentLocation);
+    </script>
+</body>
+</html>
